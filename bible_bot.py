@@ -705,7 +705,7 @@ async def check_and_send(context: ContextTypes.DEFAULT_TYPE):
 # -------------------- ЗАПУСК БОТА --------------------
 def main():
     init_db()
-    application = Application.builder().token(TOKEN).connect_timeout(60).read_timeout(60).build()
+    application = Application.builder().token(TOKEN).build()
     
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
