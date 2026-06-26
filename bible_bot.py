@@ -741,10 +741,29 @@ def main():
     application.add_handler(edit_conv_handler)
     application.add_handler(settime_conv_handler)
 
+    # Запускаем пинг-сервер для cron-job.org в отдельном потоке
+    import threading
+    ping_thread = threading.Thread(target=run_ping_server, daemon=True)
+    ping_thread.start()
+
     print("🤖 Бот запущен...")
     application.run_polling(poll_interval=1, timeout=30)
+
+# -------------------- ПРОСТАЯ СТРАНИЦА ДЛЯ ПИНГА --------------------
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class PingHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def run_ping_server():
+    port = 10000
+    server = HTTPServer(('0.0.0.0', port), PingHandler)
+    print(f"✅ Пинг-сервер запущен на порту {port}")
+    server.serve_forever()
 
 if __name__ == '__main__':
     logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
     main()
-
