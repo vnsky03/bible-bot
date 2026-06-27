@@ -19,7 +19,7 @@ TOKEN = '8801956759:AAG6OhDZd_yjGQD4qhB2UliPLG9wuYdV3cA'
 
 # Supabase
 SUPABASE_URL = "https://cqozzyfscqesoigwqxzv.supabase.co"
-SUPABASE_KEY = "sb_publishable_iZMVaWrw1VfS1L_0LQHoww_Nzi_R8Pm"
+SUPABASE_KEY = "sb_publishable_ak9pLFzSngXmF1-CAu0qew_FOGs4-6Q"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Состояния для анкеты
