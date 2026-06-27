@@ -1,7 +1,8 @@
 import logging
-import sqlite3
 import random
+import threading
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
@@ -11,9 +12,15 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+from supabase import create_client, Client
 
 # -------------------- НАСТРОЙКИ --------------------
 TOKEN = '8801956759:AAG6OhDZd_yjGQD4qhB2UliPLG9wuYdV3cA'
+
+# Supabase
+SUPABASE_URL = "https://cqozzyfscqesoigwqxzv.supabase.co"
+SUPABASE_KEY = "sb_publishable_iZMVaWrw1VfS1L_0LQHoww_Nzi_R8Pm"
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Состояния для анкеты
 NAME, GENDER, BIRTHDATE, FAMILY_STATUS, CHILDREN, LOCATION = range(6)
@@ -24,7 +31,7 @@ EDIT_CHOICE, EDIT_NAME, EDIT_GENDER, EDIT_BIRTHDATE, EDIT_FAMILY_STATUS, EDIT_CH
 # Состояние для настройки времени
 SET_TIME = 13
 
-# -------------------- ОПРЕДЕЛЕНИЕ ЧАСОВОГО ПОЯСА (ЛОКАЛЬНАЯ ТАБЛИЦА) --------------------
+# -------------------- ОПРЕДЕЛЕНИЕ ЧАСОВОГО ПОЯСА --------------------
 def get_timezone_by_city(city_name):
     city_clean = city_name.split(',')[0].strip().lower()
     timezone_map = {
@@ -91,78 +98,51 @@ def is_birthday_today(birthdate_str):
     except:
         return False
 
-# -------------------- БАЗА ДАННЫХ --------------------
+# -------------------- БАЗА ДАННЫХ (SUPABASE) --------------------
 def init_db():
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            name TEXT,
-            gender TEXT,
-            birthdate TEXT,
-            family_status TEXT,
-            children TEXT,
-            location TEXT,
-            delivery_time TEXT DEFAULT '08:00',
-            last_bible_date TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    # Таблица создаётся вручную через SQL Editor в Supabase
+    pass
 
 def save_user(user_id, name, gender, birthdate, family_status, children, location):
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
     delivery_time = get_local_delivery_time(location)
-    c.execute('''
-        INSERT OR REPLACE INTO users (user_id, name, gender, birthdate, family_status, children, location, delivery_time, last_bible_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (user_id, name, gender, birthdate, family_status, children, location, delivery_time, None))
-    conn.commit()
-    conn.close()
+    data = {
+        "user_id": user_id,
+        "name": name,
+        "gender": gender,
+        "birthdate": birthdate,
+        "family_status": family_status,
+        "children": children,
+        "location": location,
+        "delivery_time": delivery_time,
+        "last_bible_date": None
+    }
+    supabase.table("users").upsert(data).execute()
 
 def get_all_users():
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('SELECT user_id, name, gender, birthdate, family_status, children, location, delivery_time FROM users')
-    users = c.fetchall()
-    conn.close()
-    return users
+    response = supabase.table("users").select("*").execute()
+    users = response.data
+    return [(u["user_id"], u["name"], u["gender"], u["birthdate"],
+             u["family_status"], u["children"], u["location"], u["delivery_time"])
+            for u in users]
 
 def update_delivery_time(user_id, delivery_time):
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('UPDATE users SET delivery_time = ? WHERE user_id = ?', (delivery_time, user_id))
-    conn.commit()
-    conn.close()
+    supabase.table("users").update({"delivery_time": delivery_time}).eq("user_id", user_id).execute()
 
 def update_last_bible_date(user_id, date_str):
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('UPDATE users SET last_bible_date = ? WHERE user_id = ?', (date_str, user_id))
-    conn.commit()
-    conn.close()
+    supabase.table("users").update({"last_bible_date": date_str}).eq("user_id", user_id).execute()
 
 def user_exists(user_id):
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
-    exists = c.fetchone() is not None
-    conn.close()
-    return exists
+    response = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
+    return len(response.data) > 0
 
 def get_user_time(user_id):
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('SELECT delivery_time FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else '08:00'
+    response = supabase.table("users").select("delivery_time").eq("user_id", user_id).execute()
+    if response.data:
+        return response.data[0]["delivery_time"]
+    return "08:00"
 
-# -------------------- БИБЛИОТЕКА СТИХОВ (РАСШИРЕННАЯ) --------------------
+# -------------------- БИБЛИОТЕКА СТИХОВ --------------------
 BIBLE_VERSES = [
-    # Универсальные (all)
     {"text": "Притчи 3:5-6: Надейся на Господа всем сердцем твоим, и не полагайся на разум твой. Во всех путях твоих познавай Его, и Он направит стези твои.", "tags": ["all"]},
     {"text": "Иеремия 29:11: Ибо только Я знаю намерения, какие имею о вас, говорит Господь, намерения во благо, а не на зло, чтобы дать вам будущность и надежду.", "tags": ["all"]},
     {"text": "Псалом 90:11-12: Ибо Ангелам Своим заповедает о тебе – охранять тебя на всех путях твоих. На руках понесут тебя, да не преткнешься о камень ногою твоею.", "tags": ["all"]},
@@ -188,8 +168,6 @@ BIBLE_VERSES = [
     {"text": "Михея 6:8: О, человек! сказано тебе, что – добро и чего требует от тебя Господь: действовать справедливо, любить дела милосердия и смиренномудренно ходить пред Богом твоим.", "tags": ["all"]},
     {"text": "Луки 6:38: Давайте, и дастся вам; мерою доброю, утрясенною, нагнетенною и переполненною отсыплют вам в лоно ваше.", "tags": ["all"]},
     {"text": "Евреям 13:16: Не забывайте также благотворения и общительности, ибо таковые жертвы благоугодны Богу.", "tags": ["all"]},
-
-    # ---------- СЕМЬЯ / БРАК ----------
     {"text": "Ефесянам 5:25: Мужья, любите своих жен, как и Христос возлюбил Церковь и предал Себя за нее.", "tags": ["married", "family"]},
     {"text": "Бытие 2:18: Не хорошо быть человеку одному; сотворим ему помощника, соответственного ему.", "tags": ["married", "family"]},
     {"text": "Псалом 127:1: Если Господь не созиждет дома, напрасно трудятся строящие его.", "tags": ["family"]},
@@ -200,8 +178,6 @@ BIBLE_VERSES = [
     {"text": "Притчи 31:10-12: Кто найдет добродетельную жену? цена ее выше жемчугов. Уверено в ней сердце мужа ее, и он не останется без прибытка.", "tags": ["married", "family"]},
     {"text": "Иисус Навин 24:15: А я и дом мой будем служить Господу.", "tags": ["family"]},
     {"text": "1 Петра 3:7: Также и вы, мужья, обращайтесь благоразумно с женами, как с немощнейшим сосудом, оказывая им честь, как сонаследницам благодатной жизни.", "tags": ["married", "family"]},
-
-    # ---------- ДЕТИ ----------
     {"text": "Псалом 127:3: Вот наследие от Господа: дети; награда от Него – плод чрева.", "tags": ["children"]},
     {"text": "Притчи 22:6: Наставь юношу при начале пути его; он не уклонится от него, когда и состарится.", "tags": ["children"]},
     {"text": "Ефесянам 6:4: И вы, отцы, не раздражайте детей ваших, но воспитывайте их в учении и наставлении Господнем.", "tags": ["children"]},
@@ -212,8 +188,6 @@ BIBLE_VERSES = [
     {"text": "Второзаконие 6:6-7: Да будут слова сии, которые Я заповедую тебе сегодня, в сердце твоем; и внушай их детям твоим.", "tags": ["children"]},
     {"text": "Колосянам 3:20: Дети, будьте послушны родителям вашим во всем, ибо это благоугодно Господу.", "tags": ["children"]},
     {"text": "Псалом 103:15: ...и вино, которое веселит сердце человека, и елей, от которого блистает лице его, и хлеб, который укрепляет сердце человека.", "tags": ["children"]},
-
-    # ---------- ОДИНОКИЕ / НАДЕЖДА ----------
     {"text": "Бытие 2:18: И сказал Господь Бог: не хорошо быть человеку одному; сотворим ему помощника, соответственного ему.", "tags": ["single"]},
     {"text": "Псалом 67:7: Бог одиноких вводит в дом, освобождает узников от оков.", "tags": ["single"]},
     {"text": "Исаия 54:5: Ибо твой Творец есть супруг твой; Господь Саваоф – имя Его.", "tags": ["single"]},
@@ -222,8 +196,6 @@ BIBLE_VERSES = [
     {"text": "Римлянам 8:38-39: Ни смерть, ни жизнь, ни настоящее, ни будущее... не может отлучить нас от любви Божией во Христе Иисусе.", "tags": ["single"]},
     {"text": "Псалом 146:3: Он исцеляет сокрушенных сердцем и врачует скорби их.", "tags": ["single"]},
     {"text": "Софония 3:17: Господь Бог твой среди тебя, Он силен спасти тебя; возвеселится о тебе радостью.", "tags": ["single"]},
-
-    # ---------- ПАСХА ----------
     {"text": "Матфея 28:6: Его нет здесь – Он воскрес, как сказал. Подойдите, посмотрите место, где лежал Господь.", "tags": ["easter"]},
     {"text": "1 Коринфянам 15:20: Но Христос воскрес из мертвых, первенец из умерших.", "tags": ["easter"]},
     {"text": "Иоанна 11:25: Я есмь воскресение и жизнь; верующий в Меня, если и умрет, оживет.", "tags": ["easter"]},
@@ -231,9 +203,6 @@ BIBLE_VERSES = [
     {"text": "1 Петра 1:3: Благословен Бог и Отец Господа нашего Иисуса Христа, по великой Своей милости возродивший нас воскресением Иисуса Христа из мертвых.", "tags": ["easter"]},
     {"text": "Откровение 1:18: И живый во веки веков; имею ключи ада и смерти.", "tags": ["easter"]},
     {"text": "Луки 24:6-7: Его нет здесь; Он воскрес. Вспомните, как Он говорил вам, когда был еще в Галилее.", "tags": ["easter"]},
-    {"text": "Евреям 13:20-21: Бог же мира, воздвигший из мертвых Пастыря овец великого, Кровию завета вечного, Господа нашего Иисуса Христа...", "tags": ["easter"]},
-
-    # ---------- РОЖДЕСТВО ----------
     {"text": "Луки 2:11: Ныне родился вам в городе Давидовом Спаситель, Который есть Христос Господь.", "tags": ["christmas"]},
     {"text": "Матфея 1:23: Се, Дева во чреве приимет и родит Сына, и нарекут имя Ему Еммануил, что значит: с нами Бог.", "tags": ["christmas"]},
     {"text": "Исаия 9:6: Младенец родился нам – Сын дан нам; владычество на раменах Его, и нарекут имя Ему: Чудный, Советник, Бог крепкий, Отец вечности, Князь мира.", "tags": ["christmas"]},
@@ -241,36 +210,26 @@ BIBLE_VERSES = [
     {"text": "Михея 5:2: И ты, Вифлеем, дом Евфрафов, мал ли ты между тысячами Иудиными? из тебя произойдет Мне Тот, Который должен быть Владыкою в Израиле.", "tags": ["christmas"]},
     {"text": "Луки 1:35: Дух Святый найдет на Тебя, и сила Всевышнего осенит Тебя; посему и рождаемое Святое наречется Сыном Божиим.", "tags": ["christmas"]},
     {"text": "Галатам 4:4-5: Когда наступила полнота времени, Бог послал Сына Своего, Который родился от жены, подчинился закону, чтобы искупить подзаконных.", "tags": ["christmas"]},
-
-    # ---------- КРЕЩЕНИЕ (Богоявление) ----------
     {"text": "Матфея 3:16-17: И вот, отверзлись Ему небеса, и увидел Иоанн Духа Божия, Который сходил, как голубь, и ниспускался на Него. И се, глас с небес глаголющий: Сей есть Сын Мой Возлюбленный.", "tags": ["baptism"]},
     {"text": "Марка 1:10-11: Когда выходил из воды, увидел разверзающиеся небеса и Духа, как голубя, сходящего на Него. И глас был с небес: Ты Сын Мой Возлюбленный.", "tags": ["baptism"]},
     {"text": "Иоанна 1:32-34: Я видел Духа, сходящего с неба, как голубя, и пребывающего на Нем. И я видел и засвидетельствовал, что Сей есть Сын Божий.", "tags": ["baptism"]},
     {"text": "Титу 3:5-6: Он спас нас не по делам праведности, которые бы мы сотворили, а по Своей милости, банею возрождения и обновления Святым Духом.", "tags": ["baptism"]},
     {"text": "Римлянам 6:4: Мы погреблись с Ним крещением в смерть, дабы, как Христос воскрес из мертвых славою Отца, так и нам ходить в обновленной жизни.", "tags": ["baptism"]},
-
-    # ---------- ВОЗНЕСЕНИЕ ----------
     {"text": "Деяния 1:9-11: Он поднялся в глазах их, и облако взяло Его из вида их. Сей Иисус, вознесшийся от вас на небо, придет таким же образом, как вы видели Его восходящим на небо.", "tags": ["ascension"]},
     {"text": "Марка 16:19: И так Господь, после беседования с ними, вознесся на небо и воссел одесную Бога.", "tags": ["ascension"]},
     {"text": "Луки 24:51: И когда благословлял их, стал отдаляться от них и возноситься на небо.", "tags": ["ascension"]},
     {"text": "Ефесянам 4:8-10: Восшед на высоту, пленил плен и дал дары человекам. Нисшедший Он же есть и восшедший превыше всех небес, дабы наполнить всё.", "tags": ["ascension"]},
     {"text": "Евреям 4:14: Итак, имея Первосвященника великого, прошедшего небеса, Иисуса Сына Божия, будем твердо держаться исповедания нашего.", "tags": ["ascension"]},
-
-    # ---------- ТРОИЦА (Пятидесятница) ----------
     {"text": "Деяния 2:4: И исполнились все Духа Святаго, и начали говорить на иных языках, как Дух давал им провещевать.", "tags": ["trinity"]},
     {"text": "Иоанна 14:16-17: И Я умолю Отца, и даст вам другого Утешителя, да пребудет с вами вовек, Духа истины.", "tags": ["trinity"]},
     {"text": "Иоиль 2:28: И будет после того, излию от Духа Моего на всякую плоть, и будут пророчествовать сыны ваши и дочери ваши.", "tags": ["trinity"]},
     {"text": "Римлянам 5:5: Любовь Божия излилась в сердца наши Духом Святым, данным нам.", "tags": ["trinity"]},
     {"text": "2 Коринфянам 13:13: Благодать Господа нашего Иисуса Христа, и любовь Бога Отца, и общение Святаго Духа со всеми вами.", "tags": ["trinity"]},
     {"text": "Галатам 5:22-23: Плод же духа: любовь, радость, мир, долготерпение, благость, милосердие, вера, кротость, воздержание.", "tags": ["trinity"]},
-
-    # ---------- ПРЕОБРАЖЕНИЕ ----------
     {"text": "Матфея 17:2: И преобразился пред ними: и просияло лице Его, как солнце, одежды же Его сделались белыми, как свет.", "tags": ["transfiguration"]},
     {"text": "Марка 9:2-3: И преобразился пред ними. Одежды Его сделались блистающими, весьма белыми, как снег, как на земле белильщик не может выбелить.", "tags": ["transfiguration"]},
     {"text": "Луки 9:29: И когда молился, вид лица Его изменился, и одежда Его сделалась белою, блистающею.", "tags": ["transfiguration"]},
     {"text": "2 Петра 1:17-18: Ибо Он принял от Бога Отца честь и славу, когда от велелепной славы донесся к Нему глас: Сей есть Сын Мой возлюбленный.", "tags": ["transfiguration"]},
-
-    # ---------- ПРАЗДНИК ЖАТВЫ (Собирания плодов и благодарение) ----------
     {"text": "Исход 23:16: И праздник жатвы первых плодов труда твоего, что ты сеял на поле; и праздник собирания плодов в исходе года, когда уберешь с поля работу свою.", "tags": ["harvest"]},
     {"text": "Левит 23:39-40: А в пятнадцатый день седьмого месяца, когда вы собираете произведения земли, празднуйте праздник Господень семь дней: в первый день покой и в восьмой день покой. В первый день возьмите себе ветви красивых дерев, ветви пальмовые и ветви дерев широколиственных и верб речных, и веселитесь пред Господом Богом вашим семь дней.", "tags": ["harvest"]},
     {"text": "Второзаконие 16:13-15: Праздник кущей совершай у себя семь дней, когда уберешь с гумна твоего и из точила твоего. И веселись в праздник твой ты и сын твой, и дочь твоя, и раб твой, и раба твоя, и левит, и пришелец, и сирота, и вдова, которые в жилищах твоих. Семь дней празднуй Господу Богу твоему на месте, которое изберет Господь Бог твой; ибо благословит тебя Господь Бог твой во всех произведениях твоих и во всяком деле рук твоих, и ты будешь только веселиться.", "tags": ["harvest"]},
@@ -314,11 +273,9 @@ def get_verse_for_user(user):
     if children == 'Есть дети':
         tags.append('children')
     
-    # Определение праздников по дате
     today = datetime.now()
     is_harvest_day = False
     
-    # Праздник жатвы — последнее воскресенье сентября
     if today.month == 9 and today.weekday() == 6:
         last_sunday = None
         for day in range(30, 23, -1):
@@ -330,7 +287,6 @@ def get_verse_for_user(user):
             tags.append('harvest')
             tags.append('thanksgiving')
     
-    # Другие праздники
     if today.month == 1 and today.day in (6, 7):
         tags.append('christmas')
     elif today.month == 1 and today.day == 19:
@@ -344,7 +300,6 @@ def get_verse_for_user(user):
     elif today.month == 8 and today.day == 19:
         tags.append('transfiguration')
     
-    # Если сегодня Праздник жатвы – отправляем два стиха
     if is_harvest_day:
         harvest_verses = [v['text'] for v in BIBLE_VERSES if 'harvest' in v['tags']]
         thanksgiving_verses = [v['text'] for v in BIBLE_VERSES if 'thanksgiving' in v['tags']]
@@ -355,13 +310,12 @@ def get_verse_for_user(user):
             message += f"🙏 **Благодарение:**\n{random.choice(thanksgiving_verses)}"
         return message
     
-    # Обычный день – выбираем один стих по тегам
     suitable = [v for v in BIBLE_VERSES if any(tag in v['tags'] for tag in tags)]
     if not suitable:
         suitable = [v for v in BIBLE_VERSES if 'all' in v['tags']]
     return random.choice(suitable)['text']
 
-# -------------------- ОБРАБОТЧИКИ АНКЕТЫ --------------------
+# -------------------- ОБРАБОТЧИКИ КОМАНД --------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     if user_exists(user_id):
@@ -479,19 +433,19 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return ConversationHandler.END
 
-# -------------------- РЕДАКТИРОВАНИЕ АНКЕТЫ --------------------
 async def edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('SELECT name, gender, birthdate, family_status, children, location FROM users WHERE user_id = ?', (user_id,))
-    user_data = c.fetchone()
-    conn.close()
-    if not user_data:
+    response = supabase.table("users").select("*").eq("user_id", user_id).execute()
+    if not response.data:
         await update.message.reply_text("❓ Ты ещё не заполнил анкету. Используй /start.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    context.user_data['old_name'], context.user_data['old_gender'], context.user_data['old_birthdate'], \
-    context.user_data['old_family_status'], context.user_data['old_children'], context.user_data['old_location'] = user_data
+    user_data = response.data[0]
+    context.user_data['old_name'] = user_data['name']
+    context.user_data['old_gender'] = user_data['gender']
+    context.user_data['old_birthdate'] = user_data['birthdate']
+    context.user_data['old_family_status'] = user_data['family_status']
+    context.user_data['old_children'] = user_data['children']
+    context.user_data['old_location'] = user_data['location']
     reply_keyboard = [
         ['📝 Имя', '🚻 Пол'],
         ['🎂 Дата рождения', '💑 Семейное положение'],
@@ -500,8 +454,8 @@ async def edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ]
     await update.message.reply_text(
         "✏️ Редактирование анкеты\n\n📋 Текущие данные:\n"
-        f"• Имя: {user_data[0]}\n• Пол: {user_data[1]}\n• Дата рождения: {user_data[2]}\n"
-        f"• Семейное положение: {user_data[3]}\n• Дети: {user_data[4]}\n• Город: {user_data[5]}\n\nЧто хочешь изменить?",
+        f"• Имя: {user_data['name']}\n• Пол: {user_data['gender']}\n• Дата рождения: {user_data['birthdate']}\n"
+        f"• Семейное положение: {user_data['family_status']}\n• Дети: {user_data['children']}\n• Город: {user_data['location']}\n\nЧто хочешь изменить?",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     return EDIT_CHOICE
@@ -538,22 +492,14 @@ async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     new_name = update.message.text
     user_id = update.effective_user.id
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('UPDATE users SET name = ? WHERE user_id = ?', (new_name, user_id))
-    conn.commit()
-    conn.close()
+    supabase.table("users").update({"name": new_name}).eq("user_id", user_id).execute()
     await update.message.reply_text(f"✅ Имя изменено на «{new_name}».")
     return ConversationHandler.END
 
 async def edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     new_gender = update.message.text
     user_id = update.effective_user.id
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('UPDATE users SET gender = ? WHERE user_id = ?', (new_gender, user_id))
-    conn.commit()
-    conn.close()
+    supabase.table("users").update({"gender": new_gender}).eq("user_id", user_id).execute()
     await update.message.reply_text(f"✅ Пол изменён на «{new_gender}».", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
@@ -562,11 +508,7 @@ async def edit_birthdate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         datetime.strptime(new_birthdate, '%d.%m.%Y')
         user_id = update.effective_user.id
-        conn = sqlite3.connect('users.db')
-        c = conn.cursor()
-        c.execute('UPDATE users SET birthdate = ? WHERE user_id = ?', (new_birthdate, user_id))
-        conn.commit()
-        conn.close()
+        supabase.table("users").update({"birthdate": new_birthdate}).eq("user_id", user_id).execute()
         await update.message.reply_text(f"✅ Дата рождения изменена на {new_birthdate}.")
         return ConversationHandler.END
     except ValueError:
@@ -576,22 +518,14 @@ async def edit_birthdate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def edit_family_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     new_status = update.message.text
     user_id = update.effective_user.id
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('UPDATE users SET family_status = ? WHERE user_id = ?', (new_status, user_id))
-    conn.commit()
-    conn.close()
+    supabase.table("users").update({"family_status": new_status}).eq("user_id", user_id).execute()
     await update.message.reply_text(f"✅ Семейное положение изменено на «{new_status}».", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 async def edit_children(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     new_children = update.message.text
     user_id = update.effective_user.id
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('UPDATE users SET children = ? WHERE user_id = ?', (new_children, user_id))
-    conn.commit()
-    conn.close()
+    supabase.table("users").update({"children": new_children}).eq("user_id", user_id).execute()
     await update.message.reply_text(f"✅ Статус детей изменён на «{new_children}».", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
@@ -599,11 +533,7 @@ async def edit_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     new_location = update.message.text
     user_id = update.effective_user.id
     new_delivery_time = get_local_delivery_time(new_location)
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    c.execute('UPDATE users SET location = ?, delivery_time = ? WHERE user_id = ?', (new_location, new_delivery_time, user_id))
-    conn.commit()
-    conn.close()
+    supabase.table("users").update({"location": new_location, "delivery_time": new_delivery_time}).eq("user_id", user_id).execute()
     await update.message.reply_text(f"✅ Город изменён на «{new_location}». Время доставки обновлено.")
     return ConversationHandler.END
 
@@ -611,7 +541,6 @@ async def edit_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     await update.message.reply_text("❌ Редактирование отменено.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# -------------------- НАСТРОЙКА ВРЕМЕНИ --------------------
 async def settime_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     if not user_exists(user_id):
@@ -640,11 +569,8 @@ async def settime_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return ConversationHandler.END
     if choice == '🔄 Сбросить на авто':
         user_id = update.effective_user.id
-        conn = sqlite3.connect('users.db')
-        c = conn.cursor()
-        c.execute('SELECT location FROM users WHERE user_id = ?', (user_id,))
-        location = c.fetchone()[0]
-        conn.close()
+        response = supabase.table("users").select("location").eq("user_id", user_id).execute()
+        location = response.data[0]["location"]
         auto_time = get_local_delivery_time(location)
         update_delivery_time(user_id, auto_time)
         await update.message.reply_text(f"✅ Время сброшено на автоматическое. Стих будет приходить в 8:00 по твоему местному времени.", reply_markup=ReplyKeyboardRemove())
@@ -675,12 +601,8 @@ async def check_and_send(context: ContextTypes.DEFAULT_TYPE):
         birthdate = user[3]
         delivery_time = user[7] if len(user) > 7 else '08:00'
         if current_time_str == delivery_time:
-            conn = sqlite3.connect('users.db')
-            c = conn.cursor()
-            c.execute('SELECT last_bible_date FROM users WHERE user_id = ?', (user_id,))
-            result = c.fetchone()
-            last_date = result[0] if result else None
-            conn.close()
+            response = supabase.table("users").select("last_bible_date").eq("user_id", user_id).execute()
+            last_date = response.data[0]["last_bible_date"] if response.data else None
             if last_date != today_str:
                 if is_birthday_today(birthdate):
                     age = calculate_age(birthdate)
@@ -702,9 +624,21 @@ async def check_and_send(context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
+# -------------------- ПИНГ-СЕРВЕР --------------------
+class PingHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def run_ping_server():
+    port = 10000
+    server = HTTPServer(('0.0.0.0', port), PingHandler)
+    print(f"✅ Пинг-сервер запущен на порту {port}")
+    server.serve_forever()
+
 # -------------------- ЗАПУСК БОТА --------------------
 def main():
-    init_db()
     application = Application.builder().token(TOKEN).build()
     
     conv_handler = ConversationHandler(
@@ -737,32 +671,17 @@ def main():
         states={SET_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, settime_set)]},
         fallbacks=[CommandHandler('cancel', settime_cancel)],
     )
+
     application.add_handler(conv_handler)
     application.add_handler(edit_conv_handler)
     application.add_handler(settime_conv_handler)
 
-    # Запускаем пинг-сервер для cron-job.org в отдельном потоке
-    import threading
+    # Пинг-сервер в отдельном потоке
     ping_thread = threading.Thread(target=run_ping_server, daemon=True)
     ping_thread.start()
 
     print("🤖 Бот запущен...")
     application.run_polling(poll_interval=1, timeout=30)
-
-# -------------------- ПРОСТАЯ СТРАНИЦА ДЛЯ ПИНГА --------------------
-from http.server import HTTPServer, BaseHTTPRequestHandler
-
-class PingHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-
-def run_ping_server():
-    port = 10000
-    server = HTTPServer(('0.0.0.0', port), PingHandler)
-    print(f"✅ Пинг-сервер запущен на порту {port}")
-    server.serve_forever()
 
 if __name__ == '__main__':
     logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
