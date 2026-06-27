@@ -18,8 +18,10 @@ from supabase import create_client, Client
 TOKEN = '8801956759:AAG6OhDZd_yjGQD4qhB2UliPLG9wuYdV3cA'
 
 # Supabase
-SUPABASE_URL = "https://cqozzyfscqesoigwqxzv.supabase.co"
-SUPABASE_KEY = "sb_publishable_ibZdHhGd9a0ugEH7DH70sA__ZACmn7s"
+import os
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Состояния для анкеты
