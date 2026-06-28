@@ -1,6 +1,8 @@
 import logging
 import random
 import threading
+import requests
+import os
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -12,58 +14,141 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from supabase import create_client, Client
 
-# -------------------- НАСТРОЙКИ --------------------
+# ============================================
+# ПЕРЕМЕННАЯ ДЛЯ POCKETBASE (настраивается на Render)
+POCKETBASE_URL = os.environ.get("POCKETBASE_URL", "http://127.0.0.1:8090")
+# ============================================
+
 TOKEN = '8801956759:AAG6OhDZd_yjGQD4qhB2UliPLG9wuYdV3cA'
-
-# Supabase
-import os
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Состояния для анкеты
 NAME, GENDER, BIRTHDATE, FAMILY_STATUS, CHILDREN, LOCATION = range(6)
-
-# Состояния для редактирования
 EDIT_CHOICE, EDIT_NAME, EDIT_GENDER, EDIT_BIRTHDATE, EDIT_FAMILY_STATUS, EDIT_CHILDREN, EDIT_LOCATION = range(6, 13)
-
-# Состояние для настройки времени
 SET_TIME = 13
+
+# -------------------- БАЗА ДАННЫХ (POCKETBASE) --------------------
+def save_user(user_id, name, gender, birthdate, family_status, children, location):
+    delivery_time = get_local_delivery_time(location)
+    data = {
+        "user_id": str(user_id),
+        "name": name,
+        "gender": gender,
+        "birthdate": birthdate,
+        "family_status": family_status,
+        "children": children,
+        "location": location,
+        "delivery_time": delivery_time,
+        "last_bible_date": None
+    }
+    try:
+        response = requests.post(f"{POCKETBASE_URL}/api/collections/users/records", json=data)
+        if response.status_code != 200:
+            logging.error(f"Ошибка сохранения пользователя: {response.text}")
+    except Exception as e:
+        logging.error(f"Ошибка подключения к PocketBase: {e}")
+
+def get_all_users():
+    try:
+        response = requests.get(f"{POCKETBASE_URL}/api/collections/users/records")
+        if response.status_code == 200:
+            records = response.json().get("items", [])
+            users = []
+            for r in records:
+                users.append((
+                    int(r.get("user_id")),
+                    r.get("name"),
+                    r.get("gender"),
+                    r.get("birthdate"),
+                    r.get("family_status"),
+                    r.get("children"),
+                    r.get("location"),
+                    r.get("delivery_time", "08:00")
+                ))
+            return users
+        else:
+            logging.error(f"Ошибка получения пользователей: {response.text}")
+            return []
+    except Exception as e:
+        logging.error(f"Ошибка подключения к PocketBase: {e}")
+        return []
+
+def update_delivery_time(user_id, delivery_time):
+    users = get_all_users()
+    for user in users:
+        if user[0] == user_id:
+            record_id = user[0]
+            try:
+                response = requests.patch(
+                    f"{POCKETBASE_URL}/api/collections/users/records/{record_id}",
+                    json={"delivery_time": delivery_time}
+                )
+                if response.status_code != 200:
+                    logging.error(f"Ошибка обновления времени: {response.text}")
+            except Exception as e:
+                logging.error(f"Ошибка подключения к PocketBase: {e}")
+            break
+
+def update_last_bible_date(user_id, date_str):
+    users = get_all_users()
+    for user in users:
+        if user[0] == user_id:
+            record_id = user[0]
+            try:
+                response = requests.patch(
+                    f"{POCKETBASE_URL}/api/collections/users/records/{record_id}",
+                    json={"last_bible_date": date_str}
+                )
+                if response.status_code != 200:
+                    logging.error(f"Ошибка обновления даты: {response.text}")
+            except Exception as e:
+                logging.error(f"Ошибка подключения к PocketBase: {e}")
+            break
+
+def user_exists(user_id):
+    users = get_all_users()
+    for user in users:
+        if user[0] == user_id:
+            return True
+    return False
+
+def get_user_time(user_id):
+    users = get_all_users()
+    for user in users:
+        if user[0] == user_id:
+            return user[7]
+    return "08:00"
 
 # -------------------- ОПРЕДЕЛЕНИЕ ЧАСОВОГО ПОЯСА --------------------
 def get_timezone_by_city(city_name):
     city_clean = city_name.split(',')[0].strip().lower()
     timezone_map = {
-        'калининград': 2,
-        'москва': 3, 'санкт-петербург': 3, 'мурманск': 3, 'архангельск': 3,
-        'волгоград': 3, 'воронеж': 3, 'ярославль': 3, 'рязань': 3, 'тула': 3,
-        'тверь': 3, 'калуга': 3, 'смоленск': 3, 'псков': 3, 'великий новгород': 3,
-        'белгород': 3, 'курск': 3, 'орёл': 3, 'брянск': 3, 'липецк': 3,
-        'тамбов': 3, 'иваново': 3, 'владимир': 3, 'кострома': 3, 'нижний новгород': 3,
-        'чебоксары': 3, 'йошкар-ола': 3, 'саранск': 3, 'киров': 3, 'казань': 3,
-        'ульяновск': 3, 'самара': 3, 'саратов': 3, 'пенза': 3, 'набережные челны': 3,
-        'сочи': 3, 'краснодар': 3, 'новороссийск': 3, 'ставрополь': 3, 'махачкала': 3,
-        'грозный': 3, 'владикавказ': 3, 'нальчик': 3, 'черкесск': 3, 'майкоп': 3,
-        'элиста': 3, 'астрахань': 3, 'симферополь': 3, 'севастополь': 3,
-        'ижевск': 4, 'пермь': 4,
-        'екатеринбург': 5, 'челябинск': 5, 'тюмень': 5, 'курган': 5, 'сургут': 5, 'нижневартовск': 5,
-        'омск': 6,
-        'красноярск': 7, 'новосибирск': 7, 'томск': 7, 'кемерово': 7, 'новокузнецк': 7, 'барнаул': 7, 'абакан': 7, 'кызыл': 7,
-        'иркутск': 8, 'улан-удэ': 8,
-        'якутск': 9, 'чита': 9,
+        'калининград': 2, 'москва': 3, 'санкт-петербург': 3, 'мурманск': 3,
+        'архангельск': 3, 'волгоград': 3, 'воронеж': 3, 'ярославль': 3,
+        'рязань': 3, 'тула': 3, 'тверь': 3, 'калуга': 3, 'смоленск': 3,
+        'псков': 3, 'великий новгород': 3, 'белгород': 3, 'курск': 3,
+        'орёл': 3, 'брянск': 3, 'липецк': 3, 'тамбов': 3, 'иваново': 3,
+        'владимир': 3, 'кострома': 3, 'нижний новгород': 3, 'чебоксары': 3,
+        'йошкар-ола': 3, 'саранск': 3, 'киров': 3, 'казань': 3, 'ульяновск': 3,
+        'самара': 3, 'саратов': 3, 'пенза': 3, 'набережные челны': 3,
+        'сочи': 3, 'краснодар': 3, 'новороссийск': 3, 'ставрополь': 3,
+        'махачкала': 3, 'грозный': 3, 'владикавказ': 3, 'нальчик': 3,
+        'черкесск': 3, 'майкоп': 3, 'элиста': 3, 'астрахань': 3,
+        'симферополь': 3, 'севастополь': 3, 'ижевск': 4, 'пермь': 4,
+        'екатеринбург': 5, 'челябинск': 5, 'тюмень': 5, 'курган': 5,
+        'сургут': 5, 'нижневартовск': 5, 'омск': 6,
+        'красноярск': 7, 'новосибирск': 7, 'томск': 7, 'кемерово': 7,
+        'новокузнецк': 7, 'барнаул': 7, 'абакан': 7, 'кызыл': 7,
+        'иркутск': 8, 'улан-удэ': 8, 'якутск': 9, 'чита': 9,
         'владивосток': 10, 'хабаровск': 10, 'южно-сахалинск': 10,
-        'магадан': 11,
-        'петропавловск-камчатский': 12, 'анадырь': 12,
-        'киев': 2, 'харьков': 2, 'одесса': 2, 'днепр': 2, 'донецк': 3, 'луганск': 3, 'львов': 2, 'запорожье': 2,
-        'минск': 3, 'гомель': 3, 'брест': 3, 'витебск': 3, 'гродно': 3, 'могилёв': 3,
+        'магадан': 11, 'петропавловск-камчатский': 12, 'анадырь': 12,
+        'киев': 2, 'харьков': 2, 'одесса': 2, 'днепр': 2, 'донецк': 3,
+        'луганск': 3, 'львов': 2, 'запорожье': 2, 'минск': 3, 'гомель': 3,
+        'брест': 3, 'витебск': 3, 'гродно': 3, 'могилёв': 3,
         'астана': 5, 'алматы': 5, 'караганда': 5, 'шимкент': 5,
-        'ташкент': 5, 'самарканд': 5, 'бухара': 5,
-        'ереван': 4, 'баку': 4, 'тбилиси': 4, 'кишинёв': 2,
-        'бишкек': 6, 'душанбе': 5, 'ашхабад': 5,
-        'рига': 2, 'вильнюс': 2, 'таллин': 2,
+        'ташкент': 5, 'самарканд': 5, 'бухара': 5, 'ереван': 4,
+        'баку': 4, 'тбилиси': 4, 'кишинёв': 2, 'бишкек': 6,
+        'душанбе': 5, 'ашхабад': 5, 'рига': 2, 'вильнюс': 2, 'таллин': 2,
     }
     for key, offset in timezone_map.items():
         if key in city_clean or city_clean in key:
@@ -100,50 +185,7 @@ def is_birthday_today(birthdate_str):
     except:
         return False
 
-# -------------------- БАЗА ДАННЫХ (SUPABASE) --------------------
-def init_db():
-    # Таблица создаётся вручную через SQL Editor в Supabase
-    pass
-
-def save_user(user_id, name, gender, birthdate, family_status, children, location):
-    delivery_time = get_local_delivery_time(location)
-    data = {
-        "user_id": user_id,
-        "name": name,
-        "gender": gender,
-        "birthdate": birthdate,
-        "family_status": family_status,
-        "children": children,
-        "location": location,
-        "delivery_time": delivery_time,
-        "last_bible_date": None
-    }
-    supabase.table("users").upsert(data).execute()
-
-def get_all_users():
-    response = supabase.table("users").select("*").execute()
-    users = response.data
-    return [(u["user_id"], u["name"], u["gender"], u["birthdate"],
-             u["family_status"], u["children"], u["location"], u["delivery_time"])
-            for u in users]
-
-def update_delivery_time(user_id, delivery_time):
-    supabase.table("users").update({"delivery_time": delivery_time}).eq("user_id", user_id).execute()
-
-def update_last_bible_date(user_id, date_str):
-    supabase.table("users").update({"last_bible_date": date_str}).eq("user_id", user_id).execute()
-
-def user_exists(user_id):
-    response = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
-    return len(response.data) > 0
-
-def get_user_time(user_id):
-    response = supabase.table("users").select("delivery_time").eq("user_id", user_id).execute()
-    if response.data:
-        return response.data[0]["delivery_time"]
-    return "08:00"
-
-# -------------------- БИБЛИОТЕКА СТИХОВ --------------------
+# -------------------- ПОЛНАЯ БИБЛИОТЕКА СТИХОВ (100+) --------------------
 BIBLE_VERSES = [
     {"text": "Притчи 3:5-6: Надейся на Господа всем сердцем твоим, и не полагайся на разум твой. Во всех путях твоих познавай Его, и Он направит стези твои.", "tags": ["all"]},
     {"text": "Иеремия 29:11: Ибо только Я знаю намерения, какие имею о вас, говорит Господь, намерения во благо, а не на зло, чтобы дать вам будущность и надежду.", "tags": ["all"]},
@@ -263,7 +305,6 @@ BIRTHDAY_VERSES = [
 def get_verse_for_user(user):
     family_status = user[4] if len(user) > 4 else ''
     children = user[5] if len(user) > 5 else ''
-    
     tags = ['all']
     if family_status == 'Женат/Замужем':
         tags.append('married')
@@ -276,19 +317,6 @@ def get_verse_for_user(user):
         tags.append('children')
     
     today = datetime.now()
-    is_harvest_day = False
-    
-    if today.month == 9 and today.weekday() == 6:
-        last_sunday = None
-        for day in range(30, 23, -1):
-            if datetime(today.year, 9, day).weekday() == 6:
-                last_sunday = day
-                break
-        if last_sunday and today.day == last_sunday:
-            is_harvest_day = True
-            tags.append('harvest')
-            tags.append('thanksgiving')
-    
     if today.month == 1 and today.day in (6, 7):
         tags.append('christmas')
     elif today.month == 1 and today.day == 19:
@@ -301,16 +329,15 @@ def get_verse_for_user(user):
         tags.append('trinity')
     elif today.month == 8 and today.day == 19:
         tags.append('transfiguration')
-    
-    if is_harvest_day:
-        harvest_verses = [v['text'] for v in BIBLE_VERSES if 'harvest' in v['tags']]
-        thanksgiving_verses = [v['text'] for v in BIBLE_VERSES if 'thanksgiving' in v['tags']]
-        message = "🌾🎉 **Праздник жатвы!** 🎉🌾\n\n"
-        if harvest_verses:
-            message += f"📖 **О жатве:**\n{random.choice(harvest_verses)}\n\n"
-        if thanksgiving_verses:
-            message += f"🙏 **Благодарение:**\n{random.choice(thanksgiving_verses)}"
-        return message
+    elif today.month == 9 and today.weekday() == 6:
+        last_sunday = None
+        for day in range(30, 23, -1):
+            if datetime(today.year, 9, day).weekday() == 6:
+                last_sunday = day
+                break
+        if last_sunday and today.day == last_sunday:
+            tags.append('harvest')
+            tags.append('thanksgiving')
     
     suitable = [v for v in BIBLE_VERSES if any(tag in v['tags'] for tag in tags)]
     if not suitable:
@@ -437,17 +464,21 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    response = supabase.table("users").select("*").eq("user_id", user_id).execute()
-    if not response.data:
+    users = get_all_users()
+    user_data = None
+    for user in users:
+        if user[0] == user_id:
+            user_data = user
+            break
+    if not user_data:
         await update.message.reply_text("❓ Ты ещё не заполнил анкету. Используй /start.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    user_data = response.data[0]
-    context.user_data['old_name'] = user_data['name']
-    context.user_data['old_gender'] = user_data['gender']
-    context.user_data['old_birthdate'] = user_data['birthdate']
-    context.user_data['old_family_status'] = user_data['family_status']
-    context.user_data['old_children'] = user_data['children']
-    context.user_data['old_location'] = user_data['location']
+    context.user_data['old_name'] = user_data[1]
+    context.user_data['old_gender'] = user_data[2]
+    context.user_data['old_birthdate'] = user_data[3]
+    context.user_data['old_family_status'] = user_data[4]
+    context.user_data['old_children'] = user_data[5]
+    context.user_data['old_location'] = user_data[6]
     reply_keyboard = [
         ['📝 Имя', '🚻 Пол'],
         ['🎂 Дата рождения', '💑 Семейное положение'],
@@ -456,8 +487,8 @@ async def edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ]
     await update.message.reply_text(
         "✏️ Редактирование анкеты\n\n📋 Текущие данные:\n"
-        f"• Имя: {user_data['name']}\n• Пол: {user_data['gender']}\n• Дата рождения: {user_data['birthdate']}\n"
-        f"• Семейное положение: {user_data['family_status']}\n• Дети: {user_data['children']}\n• Город: {user_data['location']}\n\nЧто хочешь изменить?",
+        f"• Имя: {user_data[1]}\n• Пол: {user_data[2]}\n• Дата рождения: {user_data[3]}\n"
+        f"• Семейное положение: {user_data[4]}\n• Дети: {user_data[5]}\n• Город: {user_data[6]}\n\nЧто хочешь изменить?",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     return EDIT_CHOICE
@@ -494,15 +525,45 @@ async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     new_name = update.message.text
     user_id = update.effective_user.id
-    supabase.table("users").update({"name": new_name}).eq("user_id", user_id).execute()
-    await update.message.reply_text(f"✅ Имя изменено на «{new_name}».")
+    users = get_all_users()
+    for user in users:
+        if user[0] == user_id:
+            record_id = user[0]
+            try:
+                response = requests.patch(
+                    f"{POCKETBASE_URL}/api/collections/users/records/{record_id}",
+                    json={"name": new_name}
+                )
+                if response.status_code == 200:
+                    await update.message.reply_text(f"✅ Имя изменено на «{new_name}».")
+                else:
+                    await update.message.reply_text("❌ Ошибка при изменении имени.")
+            except Exception as e:
+                logging.error(f"Ошибка: {e}")
+                await update.message.reply_text("❌ Ошибка подключения к базе данных.")
+            break
     return ConversationHandler.END
 
 async def edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     new_gender = update.message.text
     user_id = update.effective_user.id
-    supabase.table("users").update({"gender": new_gender}).eq("user_id", user_id).execute()
-    await update.message.reply_text(f"✅ Пол изменён на «{new_gender}».", reply_markup=ReplyKeyboardRemove())
+    users = get_all_users()
+    for user in users:
+        if user[0] == user_id:
+            record_id = user[0]
+            try:
+                response = requests.patch(
+                    f"{POCKETBASE_URL}/api/collections/users/records/{record_id}",
+                    json={"gender": new_gender}
+                )
+                if response.status_code == 200:
+                    await update.message.reply_text(f"✅ Пол изменён на «{new_gender}».", reply_markup=ReplyKeyboardRemove())
+                else:
+                    await update.message.reply_text("❌ Ошибка при изменении пола.")
+            except Exception as e:
+                logging.error(f"Ошибка: {e}")
+                await update.message.reply_text("❌ Ошибка подключения к базе данных.")
+            break
     return ConversationHandler.END
 
 async def edit_birthdate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -510,8 +571,23 @@ async def edit_birthdate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         datetime.strptime(new_birthdate, '%d.%m.%Y')
         user_id = update.effective_user.id
-        supabase.table("users").update({"birthdate": new_birthdate}).eq("user_id", user_id).execute()
-        await update.message.reply_text(f"✅ Дата рождения изменена на {new_birthdate}.")
+        users = get_all_users()
+        for user in users:
+            if user[0] == user_id:
+                record_id = user[0]
+                try:
+                    response = requests.patch(
+                        f"{POCKETBASE_URL}/api/collections/users/records/{record_id}",
+                        json={"birthdate": new_birthdate}
+                    )
+                    if response.status_code == 200:
+                        await update.message.reply_text(f"✅ Дата рождения изменена на {new_birthdate}.")
+                    else:
+                        await update.message.reply_text("❌ Ошибка при изменении даты рождения.")
+                except Exception as e:
+                    logging.error(f"Ошибка: {e}")
+                    await update.message.reply_text("❌ Ошибка подключения к базе данных.")
+                break
         return ConversationHandler.END
     except ValueError:
         await update.message.reply_text("Неверный формат. Введи дату в формате ДД.ММ.ГГГГ")
@@ -520,23 +596,68 @@ async def edit_birthdate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def edit_family_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     new_status = update.message.text
     user_id = update.effective_user.id
-    supabase.table("users").update({"family_status": new_status}).eq("user_id", user_id).execute()
-    await update.message.reply_text(f"✅ Семейное положение изменено на «{new_status}».", reply_markup=ReplyKeyboardRemove())
+    users = get_all_users()
+    for user in users:
+        if user[0] == user_id:
+            record_id = user[0]
+            try:
+                response = requests.patch(
+                    f"{POCKETBASE_URL}/api/collections/users/records/{record_id}",
+                    json={"family_status": new_status}
+                )
+                if response.status_code == 200:
+                    await update.message.reply_text(f"✅ Семейное положение изменено на «{new_status}».", reply_markup=ReplyKeyboardRemove())
+                else:
+                    await update.message.reply_text("❌ Ошибка при изменении семейного положения.")
+            except Exception as e:
+                logging.error(f"Ошибка: {e}")
+                await update.message.reply_text("❌ Ошибка подключения к базе данных.")
+            break
     return ConversationHandler.END
 
 async def edit_children(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     new_children = update.message.text
     user_id = update.effective_user.id
-    supabase.table("users").update({"children": new_children}).eq("user_id", user_id).execute()
-    await update.message.reply_text(f"✅ Статус детей изменён на «{new_children}».", reply_markup=ReplyKeyboardRemove())
+    users = get_all_users()
+    for user in users:
+        if user[0] == user_id:
+            record_id = user[0]
+            try:
+                response = requests.patch(
+                    f"{POCKETBASE_URL}/api/collections/users/records/{record_id}",
+                    json={"children": new_children}
+                )
+                if response.status_code == 200:
+                    await update.message.reply_text(f"✅ Статус детей изменён на «{new_children}».", reply_markup=ReplyKeyboardRemove())
+                else:
+                    await update.message.reply_text("❌ Ошибка при изменении статуса детей.")
+            except Exception as e:
+                logging.error(f"Ошибка: {e}")
+                await update.message.reply_text("❌ Ошибка подключения к базе данных.")
+            break
     return ConversationHandler.END
 
 async def edit_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     new_location = update.message.text
     user_id = update.effective_user.id
     new_delivery_time = get_local_delivery_time(new_location)
-    supabase.table("users").update({"location": new_location, "delivery_time": new_delivery_time}).eq("user_id", user_id).execute()
-    await update.message.reply_text(f"✅ Город изменён на «{new_location}». Время доставки обновлено.")
+    users = get_all_users()
+    for user in users:
+        if user[0] == user_id:
+            record_id = user[0]
+            try:
+                response = requests.patch(
+                    f"{POCKETBASE_URL}/api/collections/users/records/{record_id}",
+                    json={"location": new_location, "delivery_time": new_delivery_time}
+                )
+                if response.status_code == 200:
+                    await update.message.reply_text(f"✅ Город изменён на «{new_location}». Время доставки обновлено.")
+                else:
+                    await update.message.reply_text("❌ Ошибка при изменении города.")
+            except Exception as e:
+                logging.error(f"Ошибка: {e}")
+                await update.message.reply_text("❌ Ошибка подключения к базе данных.")
+            break
     return ConversationHandler.END
 
 async def edit_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -571,11 +692,18 @@ async def settime_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return ConversationHandler.END
     if choice == '🔄 Сбросить на авто':
         user_id = update.effective_user.id
-        response = supabase.table("users").select("location").eq("user_id", user_id).execute()
-        location = response.data[0]["location"]
-        auto_time = get_local_delivery_time(location)
-        update_delivery_time(user_id, auto_time)
-        await update.message.reply_text(f"✅ Время сброшено на автоматическое. Стих будет приходить в 8:00 по твоему местному времени.", reply_markup=ReplyKeyboardRemove())
+        users = get_all_users()
+        location = None
+        for user in users:
+            if user[0] == user_id:
+                location = user[6]
+                break
+        if location:
+            auto_time = get_local_delivery_time(location)
+            update_delivery_time(user_id, auto_time)
+            await update.message.reply_text(f"✅ Время сброшено на автоматическое. Стих будет приходить в 8:00 по твоему местному времени.", reply_markup=ReplyKeyboardRemove())
+        else:
+            await update.message.reply_text("❌ Не удалось определить город для автоматической настройки.")
         return ConversationHandler.END
     if ':' in choice and len(choice) == 5:
         hour, minute = choice.split(':')
@@ -603,9 +731,7 @@ async def check_and_send(context: ContextTypes.DEFAULT_TYPE):
         birthdate = user[3]
         delivery_time = user[7] if len(user) > 7 else '08:00'
         if current_time_str == delivery_time:
-            response = supabase.table("users").select("last_bible_date").eq("user_id", user_id).execute()
-            last_date = response.data[0]["last_bible_date"] if response.data else None
-            if last_date != today_str:
+            if user[8] != today_str:
                 if is_birthday_today(birthdate):
                     age = calculate_age(birthdate)
                     birthday_text = random.choice(BIRTHDAY_VERSES)
@@ -678,7 +804,6 @@ def main():
     application.add_handler(edit_conv_handler)
     application.add_handler(settime_conv_handler)
 
-    # Пинг-сервер в отдельном потоке
     ping_thread = threading.Thread(target=run_ping_server, daemon=True)
     ping_thread.start()
 

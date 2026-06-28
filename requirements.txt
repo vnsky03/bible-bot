@@ -1,2 +1,2 @@
 python-telegram-bot==21.10
-supabase==2.6.0
+requests
