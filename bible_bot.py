@@ -804,8 +804,8 @@ def main():
     application.add_handler(edit_conv_handler)
     application.add_handler(settime_conv_handler)
 
-    ping_thread = threading.Thread(target=run_ping_server, daemon=True)
-    ping_thread.start()
+    # ping_thread = threading.Thread(target=run_ping_server, daemon=True)
+    # ping_thread.start()
 
     print("🤖 Бот запущен...")
     application.run_polling(poll_interval=1, timeout=30)
