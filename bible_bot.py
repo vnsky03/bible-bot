@@ -20,8 +20,7 @@ from telegram.ext import (
 POCKETBASE_URL = os.environ.get("POCKETBASE_URL", "http://127.0.0.1:8090")
 # ============================================
 
-TOKEN = '8801956759:AAGHTMaakrAZq73N_12G2yrEjakKf4H4dl8'
-
+TOKEN = '
 # Состояния для анкеты
 NAME, GENDER, BIRTHDATE, FAMILY_STATUS, CHILDREN, LOCATION = range(6)
 EDIT_CHOICE, EDIT_NAME, EDIT_GENDER, EDIT_BIRTHDATE, EDIT_FAMILY_STATUS, EDIT_CHILDREN, EDIT_LOCATION = range(6, 13)
